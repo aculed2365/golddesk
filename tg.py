@@ -4,23 +4,46 @@ import logging
 import urllib.request
 
 import config
+import db
 
 log = logging.getLogger("desk")
 
 
+def _api(method: str, payload: dict | None = None) -> dict:
+    url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/{method}"
+    data = json.dumps(payload or {}).encode()
+    req = urllib.request.Request(url, data=data, headers={"content-type": "application/json"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return json.loads(r.read())
+
+
+def chat_id() -> str:
+    return config.TELEGRAM_CHAT_ID or db.get_state("tg_chat_id", "")
+
+
+def link() -> dict:
+    """Find the chat of whoever last messaged the bot privately and remember it."""
+    if not config.TELEGRAM_BOT_TOKEN:
+        return {"ok": False, "error": "TELEGRAM_BOT_TOKEN not set"}
+    updates = _api("getUpdates").get("result", [])
+    for u in reversed(updates):
+        chat = (u.get("message") or {}).get("chat") or {}
+        if chat.get("type") == "private":
+            db.set_state("tg_chat_id", str(chat["id"]))
+            send("✅ Gold Desk linked to this chat. Calls and alerts will come here.")
+            return {"ok": True, "linked_to": chat.get("first_name", "") or chat.get("username", "")}
+    return {"ok": False, "error": "send your bot any message in Telegram first, then try again"}
+
+
 def send(text: str) -> bool:
-    if not (config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID):
+    cid = chat_id()
+    if not (config.TELEGRAM_BOT_TOKEN and cid):
         log.info("TELEGRAM (not configured):\n%s", text)
         return False
-    url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
-    body = json.dumps({"chat_id": config.TELEGRAM_CHAT_ID, "text": text,
-                       "disable_web_page_preview": True}).encode()
     for attempt in range(3):
         try:
-            req = urllib.request.Request(url, data=body,
-                                         headers={"content-type": "application/json"})
-            with urllib.request.urlopen(req, timeout=15) as r:
-                return json.loads(r.read()).get("ok", False)
+            return _api("sendMessage", {"chat_id": cid, "text": text,
+                                        "disable_web_page_preview": True}).get("ok", False)
         except Exception as e:  # noqa: BLE001
             log.warning("telegram send failed (try %d): %s", attempt + 1, e)
     return False

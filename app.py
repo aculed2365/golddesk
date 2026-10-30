@@ -159,6 +159,40 @@ def summary_loop() -> None:
         time.sleep(60)
 
 
+def checkin() -> None:
+    """Every agent does a real job once and reports in on Telegram."""
+    def mark(res):
+        return "❌ " + str(res.get("error", ""))[:80] if (not isinstance(res, dict) or "error" in res) else "✅"
+    sample = dict(SAMPLE_ALERT)
+    scan = agents.scanner(sample)
+    plan = agents.setup(sample, scan if "error" not in scan else {"valid": True})
+    rad = agents.radar(force=True)
+    rk = risk.check(plan if isinstance(plan, dict) else {}, rad, now_dubai())
+    boss = agents.boss(sample, scan, plan, rad, rk)
+    feeds = []
+    for name, url in watcher.FEEDS.items():
+        try:
+            feeds.append(f"{name} feed ✅ ({len(watcher._fetch(url))} items)")
+        except Exception as e:  # noqa: BLE001
+            feeds.append(f"{name} feed ❌ {str(e)[:60]}")
+    radar_line = (f"{rad.get('bias', '?')} — {rad.get('bias_reason', '')}"
+                  if isinstance(rad, dict) and "error" not in rad else "")
+    nxt = (rad.get("next_high_impact") or {}) if isinstance(rad, dict) else {}
+    tg.send("\n".join([
+        "🟡 GOLD DESK — AGENT CHECK-IN (paper mode)",
+        f"1. Scanner {mark(scan)}",
+        f"2. Setup analyst {mark(plan)}",
+        f"3. Big Money & World News radar {mark(rad)}",
+        f"4. Risk rules ✅ (code)",
+        f"5. Boss {mark(boss)}",
+        f"6. Trump/news watcher: " + " | ".join(feeds),
+        f"Radar read: {radar_line}" if radar_line else "",
+        f"Trump: {rad.get('trump', '')}" if isinstance(rad, dict) and rad.get("trump") else "",
+        f"Next big release: {nxt.get('event')} {nxt.get('time_dubai')} Dubai" if nxt.get("event") else "",
+        "Scanning for: prior-day break+retest, 30-min box, continuation, gold/silver pocket, sweeps.",
+    ]).replace("\n\n", "\n").strip())
+
+
 # ------------------------------------------------------------------ web server
 SAMPLE_ALERT = {
     "secret": "", "ticker": "XAUUSD", "tf": "5", "time": "TEST",
@@ -210,6 +244,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, db.recent_runs(int(q.get("n", ["30"])[0])))
         if u.path == "/radar":
             return self._send(200, agents.radar(force=True))
+        if u.path == "/link":
+            return self._send(200, tg.link())
+        if u.path == "/checkin":
+            pool.submit(checkin)
+            return self._send(200, {"ok": True, "note": "agents are checking in — watch Telegram (~1 min)"})
         if u.path == "/test":
             if q.get("telegram", ["0"])[0] == "1":
                 ok = tg.send("✅ Gold Desk test message — your phone is connected.")

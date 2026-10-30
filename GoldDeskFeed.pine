@@ -1,0 +1,170 @@
+//@version=6
+// Gold Desk Feed — put this on your XAUUSD 5-minute chart.
+// It marks the levels and fires ONE alert message (JSON) whenever a playbook signal happens.
+// Set ONE alert: Condition = "Gold Desk Feed" -> "Any alert() function call", Webhook URL = your Railway link + /webhook
+indicator("Gold Desk Feed", overlay = true, max_bars_back = 500)
+
+secret   = input.string("CHANGE_ME", "Webhook secret (same as WEBHOOK_SECRET)")
+boxSess  = input.session("0300-0330", "30-min box (Dubai time). Use 0200-0230 in US summer time")
+swingLen = input.int(12, "4H swing lookback (4H candles)", minval = 3)
+nCandles = input.int(12, "Candles sent with each alert", minval = 3, maxval = 30)
+
+f(x) => str.tostring(x, "#.##")
+
+// ---------- higher timeframes (no repainting: confirmed bars only)
+[pdh, pdl] = request.security(syminfo.tickerid, "D", [high[1], low[1]], lookahead = barmerge.lookahead_on)
+[h4hi, h4lo, h4e20, h4e50] = request.security(syminfo.tickerid, "240", [ta.highest(high, swingLen)[1], ta.lowest(low, swingLen)[1], ta.ema(close, 20)[1], ta.ema(close, 50)[1]], lookahead = barmerge.lookahead_on)
+[m15hi, m15lo, m15e20, m15e50] = request.security(syminfo.tickerid, "15", [ta.highest(high, 20)[1], ta.lowest(low, 20)[1], ta.ema(close, 20)[1], ta.ema(close, 50)[1]], lookahead = barmerge.lookahead_on)
+h4trend  = h4e20 > h4e50 ? "up" : "down"
+m15trend = m15e20 > m15e50 ? "up" : "down"
+
+// ---------- volume and candle size vs normal
+volAvg    = ta.sma(volume, 20)
+volRatio  = volAvg[1] > 0 ? volume / volAvg[1] : 0.0
+rngAvg    = ta.sma(high - low, 20)
+sizeRatio = rngAvg[1] > 0 ? (high - low) / rngAvg[1] : 0.0
+
+// ---------- today's high / low so far (before this candle)
+newDay = ta.change(time("D")) != 0
+var float dayHi = na
+var float dayLo = na
+prevDayHi = dayHi
+prevDayLo = dayLo
+if newDay
+    dayHi := high
+    dayLo := low
+else
+    dayHi := math.max(nz(dayHi, high), high)
+    dayLo := math.min(nz(dayLo, low), low)
+
+// ---------- 30-min box
+inBox = not na(time(timeframe.period, boxSess, "Asia/Dubai"))
+var float boxHi = na
+var float boxLo = na
+var bool boxReady = false
+var int boxUp = 0   // 0 = waiting, 1 = broke up, 2 = done
+var int boxDn = 0
+if inBox and not inBox[1]
+    boxHi := high
+    boxLo := low
+    boxReady := false
+    boxUp := 0
+    boxDn := 0
+else if inBox
+    boxHi := math.max(boxHi, high)
+    boxLo := math.min(boxLo, low)
+if not inBox and inBox[1]
+    boxReady := true
+
+// ---------- prior-day break state (resets each day)
+var int pdUp = 0
+var int pdDn = 0
+if newDay
+    pdUp := 0
+    pdDn := 0
+
+// ---------- 4H fib pocket (gold 0.705-0.79 + silver 0.618-0.705 combined)
+rng     = h4hi - h4lo
+zoneTop = h4trend == "up" ? h4hi - rng * 0.618 : h4lo + rng * 0.79
+zoneBot = h4trend == "up" ? h4hi - rng * 0.79  : h4lo + rng * 0.618
+
+// series values computed every candle (Pine needs these outside if-blocks)
+lo3     = ta.lowest(low, 3)
+hi3     = ta.highest(high, 3)
+crossUp = ta.crossover(close, m15hi)
+crossDn = ta.crossunder(close, m15lo)
+
+sigs = array.new_string()
+
+// prior-day breakout, then retest
+if pdUp == 0 and close > pdh and close[1] <= pdh
+    pdUp := 1
+    array.push(sigs, "pd_break_up")
+else if pdUp == 1 and low <= pdh and close > pdh
+    pdUp := 2
+    array.push(sigs, "pd_retest_up")
+else if pdUp == 1 and close < pdh
+    pdUp := 2
+if pdDn == 0 and close < pdl and close[1] >= pdl
+    pdDn := 1
+    array.push(sigs, "pd_break_down")
+else if pdDn == 1 and high >= pdl and close < pdl
+    pdDn := 2
+    array.push(sigs, "pd_retest_down")
+else if pdDn == 1 and close > pdl
+    pdDn := 2
+
+// 30-min box: first clean break per side, then retest
+if boxReady
+    if boxUp == 0 and close > boxHi
+        boxUp := 1
+        array.push(sigs, "box_break_up")
+    else if boxUp == 1 and low <= boxHi and close > boxHi
+        boxUp := 2
+        array.push(sigs, "box_retest_up")
+    else if boxUp == 1 and close < boxHi
+        boxUp := 2
+    if boxDn == 0 and close < boxLo
+        boxDn := 1
+        array.push(sigs, "box_break_down")
+    else if boxDn == 1 and high >= boxLo and close < boxLo
+        boxDn := 2
+        array.push(sigs, "box_retest_down")
+    else if boxDn == 1 and close > boxLo
+        boxDn := 2
+
+// continuation: close past the M15 20-candle high/low with M15 + 4H agreeing
+if crossUp and m15trend == "up" and h4trend == "up"
+    array.push(sigs, "continuation_long")
+if crossDn and m15trend == "down" and h4trend == "down"
+    array.push(sigs, "continuation_short")
+
+// pocket rejection: touched the zone in the last 3 candles, then a candle closes back the other way
+if h4trend == "up" and lo3 <= zoneTop and lo3 >= zoneBot - rng * 0.05 and close > open and close > high[1]
+    array.push(sigs, "pocket_long")
+if h4trend == "down" and hi3 >= zoneBot and hi3 <= zoneTop + rng * 0.05 and close < open and close < low[1]
+    array.push(sigs, "pocket_short")
+
+// liquidity sweeps of day high/low and prior-day high/low
+if not na(prevDayHi) and high > prevDayHi and close < prevDayHi
+    array.push(sigs, "sweep_day_high")
+if not na(prevDayLo) and low < prevDayLo and close > prevDayLo
+    array.push(sigs, "sweep_day_low")
+if high > pdh and close < pdh and close[1] < pdh
+    array.push(sigs, "sweep_pd_high")
+if low < pdl and close > pdl and close[1] > pdl
+    array.push(sigs, "sweep_pd_low")
+
+// ---------- send one message per candle close when anything fired
+if array.size(sigs) > 0 and barstate.isconfirmed
+    string c = "["
+    for i = nCandles - 1 to 0
+        c += (i == nCandles - 1 ? "" : ",") + "[" + f(open[i]) + "," + f(high[i]) + "," + f(low[i]) + "," + f(close[i]) + "," + str.tostring(volume[i], "#") + "]"
+    c += "]"
+    string msg = "{" +
+         "\"secret\":\"" + secret + "\"," +
+         "\"ticker\":\"" + syminfo.ticker + "\"," +
+         "\"tf\":\"" + timeframe.period + "\"," +
+         "\"time\":\"" + str.format_time(time_close, "yyyy-MM-dd HH:mm", "Asia/Dubai") + "\"," +
+         "\"signals\":[\"" + array.join(sigs, "\",\"") + "\"]," +
+         "\"price\":" + f(close) + "," +
+         "\"levels\":{" +
+             "\"pdh\":" + f(pdh) + ",\"pdl\":" + f(pdl) +
+             ",\"day_hi\":" + f(nz(prevDayHi, high)) + ",\"day_lo\":" + f(nz(prevDayLo, low)) +
+             ",\"box_hi\":" + f(nz(boxHi)) + ",\"box_lo\":" + f(nz(boxLo)) +
+             ",\"h4_swing_hi\":" + f(h4hi) + ",\"h4_swing_lo\":" + f(h4lo) +
+             ",\"zone_top\":" + f(zoneTop) + ",\"zone_bot\":" + f(zoneBot) +
+             ",\"m15_hi20\":" + f(m15hi) + ",\"m15_lo20\":" + f(m15lo) + "}," +
+         "\"trend\":{\"m15\":\"" + m15trend + "\",\"h4\":\"" + h4trend + "\"}," +
+         "\"vol_ratio\":" + f(volRatio) + ",\"size_ratio\":" + f(sizeRatio) + "," +
+         "\"candles\":" + c + "}"
+    alert(msg, alert.freq_once_per_bar_close)
+
+// ---------- draw the levels
+plot(pdh, "Prior-day high", color.new(color.green, 0), 1, plot.style_linebr)
+plot(pdl, "Prior-day low", color.new(color.red, 0), 1, plot.style_linebr)
+plot(boxReady ? boxHi : na, "Box high", color.new(color.blue, 0), 1, plot.style_linebr)
+plot(boxReady ? boxLo : na, "Box low", color.new(color.blue, 0), 1, plot.style_linebr)
+pz1 = plot(zoneTop, "Pocket top", color.new(color.orange, 60), 1, plot.style_linebr)
+pz2 = plot(zoneBot, "Pocket bottom", color.new(color.orange, 60), 1, plot.style_linebr)
+fill(pz1, pz2, color.new(color.orange, 88))

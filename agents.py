@@ -46,7 +46,7 @@ def radar(force: bool = False) -> dict:
             return _radar_cache["data"]
         data = ask(config.RADAR_MODEL, _prompt("radar"),
                    f"Dubai time now: {_now_dubai()}. Run the radar for gold.",
-                   max_tokens=2000, search=True)
+                   max_tokens=8000, search=True)
         if "error" not in data:
             _radar_cache.update(ts=time.time(), data=data)
             db.save_radar(data)

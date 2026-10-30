@@ -17,7 +17,8 @@ WEB_SEARCH_TOOL = {"type": "web_search_20250305", "name": "web_search", "max_use
 
 def parse_json(text: str) -> dict:
     """Pull the JSON object out of a model reply (handles ```json fences and extra prose)."""
-    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.S)
+    text = re.sub(r"</?cite[^>]*>", "", text)  # web-search citation tags
+    fence = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.S)
     candidates = [fence.group(1)] if fence else []
     depth, start, blocks = 0, None, []
     for i, ch in enumerate(text):

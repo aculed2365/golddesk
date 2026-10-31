@@ -40,7 +40,7 @@ def market_open(t: datetime) -> bool:
         return False
     if wd == 6:
         return False
-    if wd == 0 and h < 2:
+    if wd == 0 and h < 3:  # opens 03:00 Dubai in US winter time
         return False
     return True
 

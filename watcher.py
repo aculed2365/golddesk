@@ -70,6 +70,7 @@ def _key(source: str, guid: str) -> str:
 
 
 def check_once(market_open: bool, first_run: bool = False) -> int:
+    """market_open=True: high + Trump medium alerts. False (weekend): HIGH only."""
     fresh = []
     for source, url in FEEDS.items():
         if not url:
@@ -87,7 +88,7 @@ def check_once(market_open: bool, first_run: bool = False) -> int:
                 continue  # don't flood you with old stuff
             fresh.append(dict(it, source=source, id=str(len(fresh))))
 
-    if not fresh or not market_open:
+    if not fresh:
         return 0
 
     batch = [{"id": f["id"], "source": f["source"], "title": f["title"], "text": f["text"]}
@@ -99,12 +100,18 @@ def check_once(market_open: bool, first_run: bool = False) -> int:
         if not f:
             continue
         impact = v.get("impact")
-        if impact == "high" or (impact == "medium" and f["source"] == "TRUMP"):
+        wanted = impact == "high" or (market_open and impact == "medium" and f["source"] == "TRUMP")
+        if wanted:
             arrow = {"up": "⬆️ gold up", "down": "⬇️ gold down"}.get(v.get("gold"), "↕️ unclear")
             head = "🇺🇸 TRUMP POST" if f["source"] == "TRUMP" else "🚨 BREAKING"
+            if not market_open:
+                head = "🌙 WEEKEND · " + head
             t = datetime.now(config.DUBAI).strftime("%H:%M")
+            src = f["title"].rsplit(" - ", 1)[-1] if " - " in f["title"] else ""
+            headline = f["title"].rsplit(" - ", 1)[0] if src else f["title"]
+            extra = "\nGold is closed. Watch for a gap at Monday's open." if not market_open else ""
             tg.send(f"{head} ({t} Dubai) — {impact.upper()} — {arrow}\n{v.get('line', '')}\n"
-                    f"“{f['title'][:200]}”\n{f['link']}")
+                    f"“{headline[:200]}”" + (f" — {src}" if src else "") + extra)
             sent += 1
     return sent
 
@@ -113,7 +120,8 @@ def watch_loop(market_open_fn, paused_fn) -> None:
     first = True
     while True:
         try:
-            check_once(market_open_fn() and not paused_fn(), first_run=first)
+            if not paused_fn():
+                check_once(market_open_fn(), first_run=first)
             first = False
         except Exception:  # noqa: BLE001
             log.exception("watcher error")

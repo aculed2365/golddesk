@@ -30,8 +30,10 @@ def link() -> dict:
         chat = (u.get("message") or {}).get("chat") or {}
         if chat.get("type") == "private":
             db.set_state("tg_chat_id", str(chat["id"]))
+            log.warning("TELEGRAM_CHAT_LINK %s", chat["id"])
             send("✅ Gold Desk linked to this chat. Calls and alerts will come here.")
-            return {"ok": True, "linked_to": chat.get("first_name", "") or chat.get("username", "")}
+            return {"ok": True, "chat_id": chat["id"],
+                    "linked_to": chat.get("first_name", "") or chat.get("username", "")}
     return {"ok": False, "error": "send your bot any message in Telegram first, then try again"}
 
 
